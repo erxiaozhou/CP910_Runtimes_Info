@@ -1,0 +1,182 @@
+diff --git a/platforms/app/main.c b/platforms/app/main.c
+index eb18aa5..f77c2bb 100644
+--- a/platforms/app/main.c
++++ b/platforms/app/main.c
+@@ -21,7 +21,7 @@
+ #if defined(d_m3HasTracer)
+ #include "m3_api_tracer.h"
+ #endif
+-
++#include "z_dump.h"
+ // TODO: remove
+ #include "m3_env.h"
+ 
+@@ -306,8 +306,9 @@ M3Result repl_call  (const char* name, int argc, const char* argv[])
+         valptrs[i] = &valbuff[i];
+     }
+     result = m3_GetResults (func, ret_count, valptrs);
++    // add z
++    dump_vstack(ret_count, func, valptrs);
+     if (result) return result;
+-
+     if (ret_count <= 0) {
+         fprintf (stderr, "Result: <Empty Stack>\n");
+     }
+diff --git a/source/CMakeLists.txt b/source/CMakeLists.txt
+index ecfd40b..414b204 100644
+--- a/source/CMakeLists.txt
++++ b/source/CMakeLists.txt
+@@ -14,6 +14,7 @@ set(sources
+     "m3_info.c"
+     "m3_module.c"
+     "m3_parse.c"
++    "z_dump.c"
+ )
+ 
+ add_library(m3 STATIC ${sources})
+diff --git a/source/m3_env.c b/source/m3_env.c
+index 231ab29..937ca41 100644
+--- a/source/m3_env.c
++++ b/source/m3_env.c
+@@ -13,6 +13,7 @@
+ #include "m3_exception.h"
+ #include "m3_info.h"
+ 
++#include "z_dump.h"
+ 
+ IM3Environment  m3_NewEnvironment  ()
+ {
+@@ -964,10 +965,17 @@ _   (checkStartFunction(i_function->module))
+         default: return "unknown argument type";
+         }
+     }
+-
++    // add z
++    char * has_inst_path = "/home/std_runtime_test/dump_wasm3_default/dump_instantiation";
++    u32 has_visited_here = 0xFFFFFFFF;
++    FILE *fp_has_inst = fopen(has_inst_path, "wb");
++    fwrite(&has_visited_here, 4, 1, fp_has_inst);
++    fclose(fp_has_inst);
++    // 
+     result = (M3Result) RunCode (i_function->compiled, (m3stack_t)(runtime->stack), runtime->memory.mallocated, d_m3OpDefaultArgs);
+     ReportNativeStackUsage ();
+-
++    // add z
++    z_dump(runtime);
+     runtime->lastCalled = result ? NULL : i_function;
+ 
+     _catch: return result;
+diff --git a/source/z_dump.c b/source/z_dump.c
+new file mode 100644
+index 0000000..9881d77
+--- /dev/null
++++ b/source/z_dump.c
+@@ -0,0 +1,100 @@
++
++#include <stdarg.h>
++#include <limits.h>
++
++#include "m3_env.h"
++#include "m3_compile.h"
++#include "m3_info.h"
++
++#include "z_dump.h"
++
++void
++write_typed_data(u8 ty, void *data_ptr, FILE *fp)
++{
++    switch (ty) {
++        case 0x7F:
++        case 0x7D:
++            fwrite(data_ptr, sizeof(u32), 1, fp);
++            break;
++        case 0X7E:
++        case 0x7C:
++            fwrite(data_ptr, sizeof(u64), 1, fp);
++            break;
++        default:
++            assert(0);
++    }
++}
++
++void z_dump(IM3Runtime runtime){
++    char * dump_path = "/home/std_runtime_test/dump_wasm3_default/dump_store";
++    FILE *fp = fopen(dump_path, "wb");
++    u8 global_type;
++    // global
++    u32 global_count = runtime->modules->numGlobals;
++    M3Global * global_ptr = runtime->modules->globals;
++    fwrite(&global_count, sizeof(u32), 1, fp);
++    for(u32 i=0; i < global_count; i++){
++        global_ptr = runtime->modules->globals + i;
++        if(global_ptr->type==1)
++            global_type = 0x7F;
++        else if(global_ptr->type==2)
++            global_type = 0x7E;
++        else if(global_ptr->type==3)
++            global_type = 0x7D;
++        else if(global_ptr->type==4)
++            global_type = 0x7C;
++        fwrite(&global_type, sizeof(u8), 1, fp);
++        fwrite(&global_ptr->i64Value, sizeof(global_ptr->i64Value), 1, fp);
++        fwrite(&global_ptr->isMutable, sizeof(bool), 1, fp);
++    }
++    // Table
++    IM3Function * table = runtime->modules->table0;
++    u32 table0_len = runtime->modules->table0Size;
++    fwrite(&table0_len, sizeof(u32), 1, fp);
++    // memory
++    M3Memory * memory = &runtime->memory;
++    u32 page_num = memory->numPages;
++    size_t length = memory->mallocated->length;
++    fwrite(&length, sizeof(size_t), 1, fp);
++    fwrite(&page_num, sizeof(u32), 1, fp);
++    void * true_data_offet = m3MemData(memory->mallocated);
++    fwrite(true_data_offet, 1, length, fp);
++    fclose(fp);
++}
++void dump_vstack(int ret_count, IM3Function func, const void * valptrs[]) {
++    
++    char * stack_dump_path = "/home/std_runtime_test/dump_wasm3_default/dump_vstack";
++    FILE *fp = fopen(stack_dump_path, "wb");
++    u8 stack_ty;
++    fwrite(&ret_count, sizeof(int), 1, fp);
++    for (int i = 0; i < ret_count; i++) {
++        switch (m3_GetRetType(func, i)) {
++        case c_m3Type_i32:
++            stack_ty = 0x7F;
++            fwrite(&stack_ty, sizeof(u8), 1, fp);
++            fwrite(valptrs[i], 4, 1, fp);
++            break;
++        case c_m3Type_i64:
++            stack_ty = 0x7E;
++            fwrite(&stack_ty, sizeof(u8), 1, fp);
++            fwrite(valptrs[i], 8, 1, fp);
++            break;
++# if d_m3HasFloat
++        case c_m3Type_f32:
++            stack_ty = 0x7D;
++            fwrite(&stack_ty, sizeof(u8), 1, fp);
++            fwrite(valptrs[i], 4, 1, fp);
++            break;
++        case c_m3Type_f64:
++            stack_ty = 0x7C;
++            fwrite(&stack_ty, sizeof(u8), 1, fp);
++            fwrite(valptrs[i], 8, 1, fp);
++            break;
++# endif
++        default: 
++            ;
++            // return "unknown return type";
++        }
++    }
++    fclose(fp);
++}
+diff --git a/source/z_dump.h b/source/z_dump.h
+new file mode 100644
+index 0000000..451f8d4
+--- /dev/null
++++ b/source/z_dump.h
+@@ -0,0 +1,2 @@
++void z_dump(IM3Runtime runtime);
++void dump_vstack(int ret_count, IM3Function func, const void * valptrs[]);

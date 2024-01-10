@@ -1,0 +1,235 @@
+diff --git a/include/runtime/instance/module.h b/include/runtime/instance/module.h
+index 7228415f..e606aafe 100644
+--- a/include/runtime/instance/module.h
++++ b/include/runtime/instance/module.h
+@@ -74,6 +74,21 @@ public:
+       Pair.second(Pair.first, this);
+     }
+   }
++  /// add z move
++  /// Owned instances in this module.
++  std::vector<std::unique_ptr<Instance::FunctionInstance>> OwnedFuncInsts;
++  std::vector<std::unique_ptr<Instance::TableInstance>> OwnedTabInsts;
++  std::vector<std::unique_ptr<Instance::MemoryInstance>> OwnedMemInsts;
++  std::vector<std::unique_ptr<Instance::GlobalInstance>> OwnedGlobInsts;
++  std::vector<std::unique_ptr<Instance::ElementInstance>> OwnedElemInsts;
++  std::vector<std::unique_ptr<Instance::DataInstance>> OwnedDataInsts;
++  /// Imported and added instances in this module.
++  std::vector<FunctionInstance *> FuncInsts;
++  std::vector<TableInstance *> TabInsts;
++  std::vector<MemoryInstance *> MemInsts;
++  std::vector<GlobalInstance *> GlobInsts;
++  std::vector<ElementInstance *> ElemInsts;
++  std::vector<DataInstance *> DataInsts;
+ 
+   std::string_view getModuleName() const noexcept {
+     std::shared_lock Lock(Mutex);
+@@ -422,22 +437,6 @@ protected:
+   /// Function types.
+   std::vector<AST::FunctionType> FuncTypes;
+ 
+-  /// Owned instances in this module.
+-  std::vector<std::unique_ptr<Instance::FunctionInstance>> OwnedFuncInsts;
+-  std::vector<std::unique_ptr<Instance::TableInstance>> OwnedTabInsts;
+-  std::vector<std::unique_ptr<Instance::MemoryInstance>> OwnedMemInsts;
+-  std::vector<std::unique_ptr<Instance::GlobalInstance>> OwnedGlobInsts;
+-  std::vector<std::unique_ptr<Instance::ElementInstance>> OwnedElemInsts;
+-  std::vector<std::unique_ptr<Instance::DataInstance>> OwnedDataInsts;
+-
+-  /// Imported and added instances in this module.
+-  std::vector<FunctionInstance *> FuncInsts;
+-  std::vector<TableInstance *> TabInsts;
+-  std::vector<MemoryInstance *> MemInsts;
+-  std::vector<GlobalInstance *> GlobInsts;
+-  std::vector<ElementInstance *> ElemInsts;
+-  std::vector<DataInstance *> DataInsts;
+-
+   /// Imported instances counts.
+   uint32_t ImpGlobalNum = 0;
+ 
+diff --git a/include/vm/vm.h b/include/vm/vm.h
+index a3d931df..15a23374 100644
+--- a/include/vm/vm.h
++++ b/include/vm/vm.h
+@@ -45,6 +45,7 @@ public:
+   VM(const Configure &Conf);
+   VM(const Configure &Conf, Runtime::StoreManager &S);
+   ~VM() = default;
++  std::unique_ptr<Runtime::Instance::ModuleInstance> ActiveModInst;
+ 
+   /// ======= Functions can be called before instantiated stage. =======
+   /// Register wasm modules and host modules.
+@@ -284,7 +285,6 @@ private:
+ 
+   /// VM Storage.
+   std::unique_ptr<AST::Module> Mod;
+-  std::unique_ptr<Runtime::Instance::ModuleInstance> ActiveModInst;
+   std::vector<std::unique_ptr<Runtime::Instance::ModuleInstance>> RegModInst;
+   std::unique_ptr<Runtime::StoreManager> Store;
+   Runtime::StoreManager &StoreRef;
+diff --git a/lib/driver/runtimeTool.cpp b/lib/driver/runtimeTool.cpp
+index 8ae268f4..c40e5678 100644
+--- a/lib/driver/runtimeTool.cpp
++++ b/lib/driver/runtimeTool.cpp
+@@ -283,6 +283,12 @@ int Tool(int Argc, const char *Argv[]) noexcept {
+         FuncType = Func.second;
+       }
+     }
++    // add z
++    const char * has_inst_path = "/home/std_runtime_test/dump_WasmEdge_disableAOT/dump_result/dump_instantiation";
++    uint32_t has_visited_here = 0xFFFFFFFF;
++    FILE *fp_has_inst = fopen(has_inst_path, "wb");
++    fwrite(&has_visited_here, 4, 1, fp_has_inst);
++    fclose(fp_has_inst);
+ 
+     if (HasInit) {
+       auto AsyncResult = VM.asyncExecute(InitFunc);
+@@ -349,7 +355,147 @@ int Tool(int Argc, const char *Argv[]) noexcept {
+         AsyncResult.cancel();
+       }
+     }
+-    if (auto Result = AsyncResult.get()) {
++    auto Result = AsyncResult.get();
++    // add z
++    const char * dump_path = "/home/std_runtime_test/dump_WasmEdge_disableAOT/dump_result/dump_store";
++    FILE *fp = fopen(dump_path, "wb");
++    uint32_t global_count = (uint32_t)VM.ActiveModInst->GlobInsts.size();
++    fwrite(&global_count, sizeof(uint32_t), 1, fp);
++    AST::GlobalType global_type;
++    ValMut global_mut;
++    ValType global_cal_type;
++    WasmEdge::ValVariant val;
++    uint32_t i32_v;
++    uint64_t i64_v;
++    float f32_v;
++    double f64_v;
++    uint128_t i128_v;
++
++    bool to_write_mut;
++    char ty_to_store;
++    for(u_int32_t i=0; i<global_count;i++){
++      global_type = VM.ActiveModInst->GlobInsts[i]->getGlobalType();
++      global_mut = global_type.getValMut();
++      global_cal_type = global_type.getValType();
++      val = VM.ActiveModInst->GlobInsts[i]->getValue();
++      switch (global_cal_type) {
++        case ValType::I32:
++          ty_to_store = 0x7F;
++          fwrite(&ty_to_store, sizeof(char), 1, fp);
++          i32_v = val.get<uint32_t>();
++          fwrite(&i32_v, sizeof(i32_v), 1, fp);
++          break;
++        case ValType::I64:
++          ty_to_store = 0x7E;
++          fwrite(&ty_to_store, sizeof(char), 1, fp);
++          i64_v = val.get<uint64_t>();
++          fwrite(&i64_v, sizeof(i64_v), 1, fp);
++          break;
++        case ValType::F32:
++          ty_to_store = 0x7D;
++          fwrite(&ty_to_store, sizeof(char), 1, fp);
++          f32_v = val.get<float>();
++          fwrite(&f32_v, sizeof(f32_v), 1, fp);
++          break;
++        case ValType::F64:
++          ty_to_store = 0x7C;
++          fwrite(&ty_to_store, sizeof(char), 1, fp);
++          f64_v = val.get<double>();
++          fwrite(&f64_v, sizeof(f64_v), 1, fp);
++          break;
++        case ValType::V128:
++          ty_to_store = 0x7B;
++          fwrite(&ty_to_store, sizeof(char), 1, fp);
++          i128_v = val.get<uint128_t>();
++          fwrite(&i128_v, sizeof(i128_v), 1, fp);
++          // uint128_t
++          break;
++        default:
++          break;
++      }
++      switch (global_mut) {
++        case ValMut::Const:
++          to_write_mut = 0;
++          break;
++        case ValMut::Var:
++        to_write_mut = 1;
++        break;
++      }
++      fwrite(&to_write_mut, sizeof(bool), 1, fp);
++    }
++    u_int32_t table_num = (u_int32_t)VM.ActiveModInst->TabInsts.size();
++    fwrite(&table_num, sizeof(u_int32_t), 1, fp);
++    if(table_num > 0){
++      Runtime::Instance::TableInstance * default_table = VM.ActiveModInst->TabInsts[0];
++      uint32_t default_table_len = default_table->getSize();
++      fwrite(&default_table_len, sizeof(u_int32_t), 1, fp);
++    }
++    // VM.ActiveModInst->MemInsts;
++    uint32_t mem_num = (u_int32_t)VM.ActiveModInst->MemInsts.size();
++    fwrite(&mem_num, sizeof(u_int32_t), 1, fp);
++    if (mem_num > 0) {
++      Runtime::Instance::MemoryInstance * default_memory = VM.ActiveModInst->MemInsts[0];
++      uint32_t page_num = default_memory->getPageSize();
++      size_t length = default_memory->kPageSize * page_num;
++      fwrite(&page_num, sizeof(u_int32_t), 1, fp);
++      fwrite(&length, sizeof(size_t), 1, fp);
++      // Expect<Span<Byte>> * content = &default_memory->getBytes(0, length);
++      // content->
++      fwrite(default_memory->getBytes(0, length)->data(), 1, length, fp);
++    }
++    fclose(fp);
++    const char * vstack_path = "/home/std_runtime_test/dump_WasmEdge_disableAOT/dump_result/dump_vstack";
++    FILE *fp2 = fopen(vstack_path, "wb");
++    size_t vstack_len = Result->size();
++    fwrite(&vstack_len, sizeof(size_t), 1, fp2);
++    for (size_t I = 0; I < vstack_len; ++I) {
++        switch ((*Result)[I].second) {
++        case ValType::I32:
++          ty_to_store = 0x7F;
++          i32_v = (*Result)[I].first.get<uint32_t>();
++          fwrite(&ty_to_store, sizeof(char), 1, fp2);
++          fwrite(&i32_v, 4, 1, fp2);
++          break;
++        case ValType::I64:
++          ty_to_store = 0x7E;
++          i64_v = (*Result)[I].first.get<uint64_t>();
++          fwrite(&ty_to_store, sizeof(char), 1, fp2);
++          fwrite(&i64_v, 8, 1, fp2);
++          break;
++        case ValType::F32:
++          ty_to_store = 0x7D;
++          f32_v = (*Result)[I].first.get<float>();
++          fwrite(&ty_to_store, sizeof(char), 1, fp2);
++          fwrite(&f32_v, 4, 1, fp2);
++          break;
++        case ValType::F64:
++          ty_to_store = 0x7C;
++          f64_v = (*Result)[I].first.get<double>();
++          fwrite(&ty_to_store, sizeof(char), 1, fp2);
++          fwrite(&f64_v, 8, 1, fp2);
++          break;
++        case ValType::V128:
++          ty_to_store = 0x7B;
++          i128_v = (*Result)[I].first.get<uint128_t>();
++          fwrite(&ty_to_store, sizeof(char), 1, fp2);
++          fwrite(&i128_v, 16, 1, fp2);
++          break;
++        /// TODO: FuncRef and ExternRef
++        
++        case ValType::FuncRef:
++          ty_to_store = 0x70;
++          fwrite(&ty_to_store, sizeof(char), 1, fp2);
++          break;
++        case ValType::ExternRef:
++          ty_to_store = 0x6F;
++          fwrite(&ty_to_store, sizeof(char), 1, fp2);
++          break;
++        default:
++          break;
++        }
++    }
++    fclose(fp2);
++    if (Result) {
+       /// Print results.
+       for (size_t I = 0; I < Result->size(); ++I) {
+         switch ((*Result)[I].second) {

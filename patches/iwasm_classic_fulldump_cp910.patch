@@ -1,0 +1,347 @@
+diff --git a/core/iwasm/common/wasm_application.c b/core/iwasm/common/wasm_application.c
+index 8a19de8e..93f0f2d3 100644
+--- a/core/iwasm/common/wasm_application.c
++++ b/core/iwasm/common/wasm_application.c
+@@ -3,6 +3,7 @@
+  * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+  */
+ 
++#include "z_dump.h"
+ #include "bh_platform.h"
+ #if WASM_ENABLE_INTERP != 0
+ #include "../interpreter/wasm_runtime.h"
+@@ -507,11 +508,18 @@ execute_func(WASMModuleInstanceCommon *module_inst, const char *name,
+                                    "create singleton exec_env failed");
+         goto fail;
+     }
+-
++    // add z
++    char * has_inst_path = "/home/std_runtime_test/dump_iwasm_interp_classic/dump_instantiation";
++    uint32 has_visited_here = 0xFFFFFFFF;
++    FILE *fp_has_inst = fopen(has_inst_path, "wb");
++    fwrite(&has_visited_here, 4, 1, fp_has_inst);
++    fclose(fp_has_inst);
++    // 
+     if (!wasm_runtime_call_wasm(exec_env, target_func, argc1, argv1)) {
+         goto fail;
+     }
+ 
++    dump_vstack(argv1, type);
+     /* print return value */
+     for (j = 0; j < type->result_count; j++) {
+         switch (type->types[type->param_count + j]) {
+diff --git a/core/iwasm/common/z_dump.c b/core/iwasm/common/z_dump.c
+new file mode 100644
+index 00000000..1f2315b7
+--- /dev/null
++++ b/core/iwasm/common/z_dump.c
+@@ -0,0 +1,257 @@
++#include "../interpreter/wasm_interp.h"
++#include "bh_log.h"
++#include "../interpreter/wasm_runtime.h"
++#include "../interpreter/wasm_opcode.h"
++#include "../interpreter/wasm_loader.h"
++#include "wasm_exec_env.h"
++#include "wasm_memory.h"
++#include "z_dump.h"
++// add z
++#include <assert.h>
++#include "wasm.h"
++//
++#if WASM_ENABLE_SHARED_MEMORY != 0
++#include "../common/wasm_shared_memory.h"
++#endif
++#if WASM_ENABLE_THREAD_MGR != 0 && WASM_ENABLE_DEBUG_INTERP != 0
++#include "../libraries/thread-mgr/thread_manager.h"
++#include "../libraries/debug-engine/debug_engine.h"
++#endif
++#if WASM_ENABLE_FAST_JIT != 0
++#include "../fast-jit/jit_compiler.h"
++#endif
++
++typedef int32 CellType_I32;
++typedef int64 CellType_I64;
++typedef float32 CellType_F32;
++typedef float64 CellType_F64;
++
++void
++write_typed_data(uint8 ty, void *data_ptr, FILE *fp)
++{
++    switch (ty) {
++        case VALUE_TYPE_EXTERNREF:
++        case VALUE_TYPE_FUNCREF:
++        case VALUE_TYPE_I32:
++        case VALUE_TYPE_F32:
++            fwrite(data_ptr, sizeof(uint32), 1, fp);
++            break;
++        case VALUE_TYPE_I64:
++        case VALUE_TYPE_F64:
++            fwrite(data_ptr, sizeof(uint64), 1, fp);
++            break;
++        default:
++            assert(0);
++    }
++}
++
++static inline uint8 *
++get_global_addr(uint8 *global_data, WASMGlobalInstance *global)
++{
++#if WASM_ENABLE_MULTI_MODULE == 0
++    return global_data + global->data_offset;
++#else
++    return global->import_global_inst
++               ? global->import_module_inst->global_data
++                     + global->import_global_inst->data_offset
++               : global_data + global->data_offset;
++#endif
++}
++
++WASMMemoryInstance *
++wasm_get_default_memory(WASMModuleInstance *module_inst)
++{
++    if (module_inst->memories)
++        return module_inst->memories[0];
++    else
++        return NULL;
++}
++
++void
++write_interp_data(WASMModuleInstance *module, WASMInterpFrame *frame, uint32 *frame_sp, uint32 ret_num)
++{
++    // get FILE
++    char * real_path_write_data = "/home/std_runtime_test/dump_iwasm_interp_classic/dump_store";
++    FILE *fp = fopen(real_path_write_data, "wb");
++
++    // global
++    uint32 global_count = module->global_count; 
++    uint8 *global_data = module->global_data;
++    uint8 *global_addr;
++    uint8 global_type;
++    WASMGlobalInstance *global;
++    WASMGlobalInstance *globals_base = module->globals;
++    uint32 global_index;
++    bool global_mutable;
++    WASMValue global_value;
++    // type sequence to check
++    fwrite(&global_count, sizeof(uint32), 1, fp);
++    // fwrite(&i, sizeof(int), 1, fp);
++    if (global_count > 0) {
++        uint8 global_types_to_check[global_count];
++        for (global_index = 0; global_index < global_count; global_index++) {
++            global = globals_base + global_index;
++            global_type = global->type;
++            global_addr = get_global_addr(global_data, global);
++            global_types_to_check[global_index] = global_type;
++            // write type
++            fwrite(&global_type, sizeof(uint8), 1, fp);
++            write_typed_data(global_type, global_addr, fp);
++        }
++    }
++    // Table
++    WASMTableInstance *table_inst;
++    uint32 table_idx, elem_idx;
++    uint32 table_count = module->table_count;
++    fwrite(&table_count, sizeof(uint32), 1, fp);
++    WASMTableInstance **tables = module->tables;
++    uint32 table_cur_size;
++    uint32 table_func_idx;
++    if (table_count > 0) {
++        
++        table_inst = *(tables + 0);
++        table_cur_size = table_inst->cur_size;
++        fwrite(&table_cur_size, sizeof(uint32), 1, fp);
++        for (elem_idx = 0; elem_idx < table_cur_size; elem_idx++) {
++            table_func_idx = *(table_inst->base_addr + elem_idx);
++            fwrite(&table_func_idx, sizeof(uint32), 1, fp);
++        }
++    }
++
++    // para + local
++    uint8 local_type;
++    uint32 local_data;
++    uint32 local_idx, local_offset;
++    uint32 *frame_ptr;
++    uint32 param_count = frame->function->param_count;
++    uint32 local_count = frame->function->local_count;
++    uint32 param_local_sum = param_count + local_count;
++    fwrite(&param_local_sum, sizeof(uint32), 1, fp);
++    for (local_idx = 0; local_idx < param_local_sum; local_idx++) {
++        // local_offset = frame->lp+local_idx;
++        if (local_idx < param_count)
++            local_type = frame->function->param_types[local_idx];
++        else
++            local_type = frame->function->local_types[local_idx - param_count];
++        fwrite(&local_type, sizeof(uint8), 1, fp);
++
++        local_offset = frame->function->local_offsets[local_idx];
++        frame_ptr = frame->lp + local_offset;
++        write_typed_data(local_type, frame_ptr, fp);
++    }
++    // stack
++    uint32 *frame_spb = frame->sp_bottom;
++    uint32 i;
++    uint32 sp_word;
++    uint32 ret_cell_num = ret_num;
++    fwrite(&ret_cell_num, sizeof(uint32), 1, fp);
++    for (i = 0; i < ret_cell_num; i++) {
++        sp_word = frame_sp[i];
++        // TODO
++        
++        fwrite(frame_sp+i, sizeof(uint32), 1, fp);
++    }
++    
++    // memory
++    uint32 memory_count = module->memory_count;
++    // write memory count
++    fwrite(&memory_count, sizeof(uint32), 1, fp);
++    // WASMMemoryInstance *memories_base = module->memories;
++    if (memory_count > 0) {
++        WASMMemoryInstance *memory = wasm_get_default_memory(module);
++        uint8 *maddr = memory->memory_data;
++        uint8 *maddr_end = memory->memory_data_end;
++        uint64 linear_mem_size =
++            memory->num_bytes_per_page * memory->cur_page_count;
++        uint32 cur_page_count = memory->cur_page_count;
++        fwrite(&linear_mem_size, sizeof(uint64), 1, fp);
++        fwrite(&cur_page_count, sizeof(uint32), 1, fp);
++        fwrite(maddr, 1, linear_mem_size, fp);
++    }
++    fclose(fp);
++}
++
++void dump_vstack(uint32 *argv1, WASMType *type){
++    char * vstack_path = "/home/std_runtime_test/dump_iwasm_interp_classic/dump_vstack";
++    char ty_to_store;
++    int j;
++    int k=0;
++
++    FILE *fp = fopen(vstack_path, "wb");
++    size_t result_count = type->result_count;
++    fwrite(&result_count, sizeof(result_count), 1, fp);
++    for (j=0;j<type->result_count;j++){
++        
++        switch (type->types[type->param_count + j]) {
++            case VALUE_TYPE_I32:
++            {
++                ty_to_store = VALUE_TYPE_I32;
++                fwrite(&ty_to_store, sizeof(char), 1, fp);
++                fwrite(&argv1[k], 4, 1, fp);
++                k++;
++                break;
++            }
++            case VALUE_TYPE_I64:
++            {
++                ty_to_store = VALUE_TYPE_I64;
++                fwrite(&ty_to_store, sizeof(char), 1, fp);
++                fwrite(&argv1[k], 4, 2, fp);
++                k += 2;
++                break;
++            }
++            case VALUE_TYPE_F32:
++            {
++                ty_to_store = VALUE_TYPE_F32;
++                fwrite(&ty_to_store, sizeof(char), 1, fp);
++                fwrite(&argv1[k], 4, 1, fp);
++                k++;
++                break;
++            }
++            case VALUE_TYPE_F64:
++            {
++                ty_to_store = VALUE_TYPE_F64;
++                fwrite(&ty_to_store, sizeof(char), 1, fp);
++                union {
++                    float64 val;
++                    uint32 parts[2];
++                } u;
++                fwrite(&argv1[k], 4, 2, fp);
++                k += 2;
++                break;
++            }
++            case VALUE_TYPE_FUNCREF:
++            {
++                ty_to_store = VALUE_TYPE_FUNCREF;
++                fwrite(&ty_to_store, sizeof(char), 1, fp);
++                fwrite(&argv1[k], 4, 1, fp);
++                // 
++                uint32 is_null;
++                if(argv1[k] == NULL_REF)
++                    is_null = 1;
++                else
++                    is_null = 0;
++                fwrite(&is_null, 4, 1, fp);
++                // 
++                k++;
++                break;
++            }
++            case VALUE_TYPE_EXTERNREF:
++            {
++                ty_to_store = VALUE_TYPE_EXTERNREF;
++                fwrite(&ty_to_store, sizeof(char), 1, fp);
++                fwrite(&argv1[k], 4, 1, fp);
++                //
++                uint32 is_null;
++                if(argv1[k] == NULL_REF)
++                    is_null = 1;
++                else
++                    is_null = 0;
++                fwrite(&is_null, 4, 1, fp);
++                //
++                k++;
++                break;
++            }
++        }
++    }
++    fclose(fp);
++}
+diff --git a/core/iwasm/common/z_dump.h b/core/iwasm/common/z_dump.h
+new file mode 100644
+index 00000000..ece8616a
+--- /dev/null
++++ b/core/iwasm/common/z_dump.h
+@@ -0,0 +1,23 @@
++#include "../interpreter/wasm_interp.h"
++#include "bh_log.h"
++#include "../interpreter/wasm_runtime.h"
++#include "../interpreter/wasm_opcode.h"
++#include "../interpreter/wasm_loader.h"
++#include "wasm_exec_env.h"
++// add z
++#include <assert.h>
++#include "wasm.h"
++//
++#if WASM_ENABLE_SHARED_MEMORY != 0
++#include "../common/wasm_shared_memory.h"
++#endif
++#if WASM_ENABLE_THREAD_MGR != 0 && WASM_ENABLE_DEBUG_INTERP != 0
++#include "../libraries/thread-mgr/thread_manager.h"
++#include "../libraries/debug-engine/debug_engine.h"
++#endif
++#if WASM_ENABLE_FAST_JIT != 0
++#include "../fast-jit/jit_compiler.h"
++#endif
++void
++write_interp_data(WASMModuleInstance *module, WASMInterpFrame *frame, uint32 *frame_sp, uint32 ret_num);
++void dump_vstack(uint32 *argv1, WASMType *type);
+\ No newline at end of file
+diff --git a/core/iwasm/interpreter/wasm_interp_classic.c b/core/iwasm/interpreter/wasm_interp_classic.c
+index 9df1df08..fe8c7070 100644
+--- a/core/iwasm/interpreter/wasm_interp_classic.c
++++ b/core/iwasm/interpreter/wasm_interp_classic.c
+@@ -2,7 +2,7 @@
+  * Copyright (C) 2019 Intel Corporation.  All rights reserved.
+  * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+  */
+-
++#include "../common/z_dump.h"
+ #include "wasm_interp.h"
+ #include "bh_log.h"
+ #include "wasm_runtime.h"
+@@ -3828,6 +3828,8 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+ 
+     return_func:
+     {
++        if (!prev_frame->ip)
++            write_interp_data(module, frame, frame_sp, (uint32)cur_func->ret_cell_num);
+         FREE_FRAME(exec_env, frame);
+         wasm_exec_env_set_cur_frame(exec_env, (WASMRuntimeFrame *)prev_frame);
+ 

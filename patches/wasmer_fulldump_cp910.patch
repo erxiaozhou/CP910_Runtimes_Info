@@ -1,0 +1,334 @@
+diff --git a/lib/api/src/sys/extern_ref.rs b/lib/api/src/sys/extern_ref.rs
+index 4f0fcd9fa..46dcd7bd3 100644
+--- a/lib/api/src/sys/extern_ref.rs
++++ b/lib/api/src/sys/extern_ref.rs
+@@ -8,7 +8,8 @@ use super::store::{AsStoreMut, AsStoreRef};
+ #[repr(transparent)]
+ /// An opaque reference to some data. This reference can be passed through Wasm.
+ pub struct ExternRef {
+-    handle: StoreHandle<VMExternObj>,
++    ///
++    pub handle: StoreHandle<VMExternObj>,
+ }
+ 
+ impl ExternRef {
+diff --git a/lib/api/src/sys/externals/function.rs b/lib/api/src/sys/externals/function.rs
+index 1b90a43c4..03b796617 100644
+--- a/lib/api/src/sys/externals/function.rs
++++ b/lib/api/src/sys/externals/function.rs
+@@ -38,7 +38,9 @@ use wasmer_vm::{
+ ///   [Closures as host functions tracking issue](https://github.com/wasmerio/wasmer/issues/1840)
+ #[derive(Debug, Clone)]
+ pub struct Function {
+-    pub(crate) handle: StoreHandle<VMFunction>,
++    // pub(crate) handle: StoreHandle<VMFunction>,
++    ///
++    pub handle: StoreHandle<VMFunction>,
+ }
+ 
+ impl Function {
+diff --git a/lib/api/src/sys/store.rs b/lib/api/src/sys/store.rs
+index 542ef61f7..28918fa44 100644
+--- a/lib/api/src/sys/store.rs
++++ b/lib/api/src/sys/store.rs
+@@ -103,6 +103,18 @@ impl Store {
+     pub fn same(a: &Self, b: &Self) -> bool {
+         a.engine.id() == b.engine.id()
+     }
++    /// add z
++    pub fn get_globals(&self) -> &Vec<wasmer_vm::VMGlobal> {
++        &self.inner.objects.globals
++    }
++    /// add z
++    pub fn get_tables(&self) -> &Vec<wasmer_vm::VMTable> {
++        &self.inner.objects.tables
++    }
++    /// add z
++    pub fn get_memories(&self) -> &Vec<wasmer_vm::VMMemory> {
++        &self.inner.objects.memories
++    }
+ }
+ 
+ #[cfg(feature = "compiler")]
+diff --git a/lib/cli/src/commands/run.rs b/lib/cli/src/commands/run.rs
+index c6e0fde6e..25f6c907d 100644
+--- a/lib/cli/src/commands/run.rs
++++ b/lib/cli/src/commands/run.rs
+@@ -21,6 +21,10 @@ mod wasi;
+ #[cfg(feature = "wasi")]
+ use wasi::Wasi;
+ 
++// add z
++use crate::z_dump::{dump_vstack, dump_store};
++//
++
+ #[derive(Debug, Parser, Clone, Default)]
+ /// The options for the `wasmer run` subcommand
+ pub struct Run {
+@@ -104,10 +108,19 @@ impl Run {
+                 .call(&mut store, &[])
+                 .with_context(|| "failed to run _initialize function")?;
+         }
+-
++        // add z
++        let has_inst_path = "/home/std_runtime_test/dump_wasmer_default/dump_instantiation";
++        let mut file = std::fs::File::create(has_inst_path).expect("create failed");
++        let has_visited_num: u32 = 0xFFFFFFFF;
++        std::io::Write::write_all(&mut file, &has_visited_num.to_le_bytes()).expect("write failed");
++        // 
+         // Do we want to invoke a function?
+         if let Some(ref invoke) = self.invoke {
+             let result = self.invoke_function(&mut store, &instance, invoke, &self.args)?;
++            // add z
++            dump_store(&store);
++            dump_vstack(&result);
++            //
+             println!(
+                 "{}",
+                 result
+diff --git a/lib/cli/src/lib.rs b/lib/cli/src/lib.rs
+index 7a80b9fae..a18a59e6c 100644
+--- a/lib/cli/src/lib.rs
++++ b/lib/cli/src/lib.rs
+@@ -27,6 +27,7 @@ pub mod logging;
+ pub mod store;
+ pub mod suggestions;
+ pub mod utils;
++mod z_dump;
+ 
+ /// Version number of this crate.
+ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+diff --git a/lib/cli/src/z_dump.rs b/lib/cli/src/z_dump.rs
+new file mode 100644
+index 000000000..65c6de014
+--- /dev/null
++++ b/lib/cli/src/z_dump.rs
+@@ -0,0 +1,147 @@
++use wasmer::{Value, Type, Store};
++
++///
++pub fn dump_store(store: &Store) {
++    let _path = "/home/std_runtime_test/dump_wasmer_default/dump_store";
++    let mut file = std::fs::File::create(_path).expect("create failed");
++    let _globals = store.get_globals();
++    let _global_size = _globals.len();
++    std::io::Write::write_all(&mut file, &_global_size.to_le_bytes()).expect("write failed");
++    for i in 0.._global_size{
++        let _cur_global_ty = _globals[i].ty();
++        let _val_ty = _cur_global_ty.ty;
++        let _cur_global_v = _globals[i].vm_global_definition_z();
++        unsafe {
++            let _v = _cur_global_v.as_ptr();//.as_ref().val;
++            let _v = _v.as_ref().val;
++            match &_val_ty {
++                Type::I32 => {
++                    let val_to_write = _v.i32;
++                    let ty_char : i8 = 0x7F;
++                    std::io::Write::write_all(&mut file, &ty_char.to_le_bytes()).expect("write failed");
++                    std::io::Write::write_all(&mut file, &val_to_write.to_le_bytes()).expect("write failed");
++                },
++                Type::I64 => {
++                    let val_to_write = _v.i64;
++                    let ty_char : i8 = 0x7E;
++                    std::io::Write::write_all(&mut file, &ty_char.to_le_bytes()).expect("write failed");
++                    std::io::Write::write_all(&mut file, &val_to_write.to_le_bytes()).expect("write failed");
++                },
++                Type::F32 => {
++                    let val_to_write = _v.f32;
++                    let ty_char : i8 = 0x7D;
++                    std::io::Write::write_all(&mut file, &ty_char.to_le_bytes()).expect("write failed");
++                    std::io::Write::write_all(&mut file, &val_to_write.to_le_bytes()).expect("write failed");
++                },
++                Type::F64 => {
++                    let val_to_write = _v.f64;
++                    let ty_char : i8 = 0x7C;
++                    std::io::Write::write_all(&mut file, &ty_char.to_le_bytes()).expect("write failed");
++                    std::io::Write::write_all(&mut file, &val_to_write.to_le_bytes()).expect("write failed");
++                },
++                Type::V128 => {
++                    let val_to_write = _v.i128;
++                    let ty_char : i8 = 0x7B;
++                    std::io::Write::write_all(&mut file, &ty_char.to_le_bytes()).expect("write failed");
++                    std::io::Write::write_all(&mut file, &val_to_write.to_le_bytes()).expect("write failed");
++                },
++                Type::ExternRef => {
++                },
++                Type::FuncRef => {
++                },
++            }
++        }
++        // let _table = store.
++
++    }
++    let _tables = store.get_tables();
++    let table_num = _tables.len();
++    std::io::Write::write_all(&mut file, &table_num.to_le_bytes()).expect("write failed");
++    if table_num > 0{
++        let table_0_size = _tables[0].size();
++        std::io::Write::write_all(&mut file, &table_0_size.to_le_bytes()).expect("write failed");
++    }
++
++    let _memories = store.get_memories();
++    // let default_memory = _memories[0].get_vm_memory_definition();
++    unsafe {
++        let memory_num = _memories.len();
++        std::io::Write::write_all(&mut file, &memory_num.to_le_bytes()).expect("write failed");
++        if memory_num > 0 {
++            let default_memory = _memories[0].0.vmmemory().as_ref();
++            let page_num = _memories[0].0.size().0;
++            let length = default_memory.current_length;
++            // let page_num = _memories[0].mmap.size.0;
++            std::io::Write::write_all(&mut file, &page_num.to_le_bytes()).expect("write failed");
++            std::io::Write::write_all(&mut file, &length.to_le_bytes()).expect("write failed");
++            let data = default_memory.base;
++            let d2 = std::slice::from_raw_parts(data, length);
++            std::io::Write::write_all(&mut file, d2).expect("write failed");
++        }
++    }
++
++
++}
++
++/// dump the value stack
++pub fn dump_vstack(result: &Box<[Value]>) {
++    let _path = "/home/std_runtime_test/dump_wasmer_default/dump_vstack";
++    let mut file = std::fs::File::create(_path).expect("create failed");
++    std::io::Write::write_all(&mut file, &result.len().to_le_bytes()).expect("write failed");
++    for v in result.as_ref() {
++        match v {
++            Value::I32(value_content) => {
++                let cur_ty:u8 = 0x7F;
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++            },
++            Value::I64(value_content) => {
++                let cur_ty:u8 = 0x7E;
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++            },
++            Value::F32(value_content) => {
++                let cur_ty:u8 = 0x7D;
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++            },
++            Value::F64(value_content) => {
++                let cur_ty:u8 = 0x7C;
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++            },
++            Value::V128(value_content) => {
++                let cur_ty:u8 = 0x7B;
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++            },
++            Value::ExternRef(Some(ref f)) => {
++                let cur_ty:u8 = 0x6F;
++                let some_extern = u64::from(f.handle.store_id().0);
++                // let some_extern: u32= 0;
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &some_extern.to_le_bytes()).expect("write failed");
++            },
++            Value::FuncRef(Some(ref f)) => {
++                let cur_ty:u8 = 0x70;
++                let some_function = u64::from(f.handle.store_id().0);
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &some_function.to_le_bytes()).expect("write failed");
++            },
++            Value::FuncRef(None) => {
++                
++                let cur_ty:u8 = 0x70;
++                let ref_null_val: u64= 0xffffffff;
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &ref_null_val.to_le_bytes()).expect("write failed");
++            },
++            Value::ExternRef(None) => {
++                
++                let cur_ty:u8 = 0x6F;
++                let ref_null_val: u64= 0xffffffff;
++                std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                std::io::Write::write_all(&mut file, &ref_null_val.to_le_bytes()).expect("write failed");
++            },
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/lib/vm/src/global.rs b/lib/vm/src/global.rs
+index 682a66fb2..5f034f3e5 100644
+--- a/lib/vm/src/global.rs
++++ b/lib/vm/src/global.rs
+@@ -30,4 +30,10 @@ impl VMGlobal {
+     pub fn vmglobal(&self) -> NonNull<VMGlobalDefinition> {
+         self.vm_global_definition.as_ptr()
+     }
++    
++    /// add z
++    pub fn vm_global_definition_z(&self) -> &MaybeInstanceOwned<VMGlobalDefinition>  {
++        &self.vm_global_definition
++        // &self.vm_global_definition
++    }
+ }
+diff --git a/lib/vm/src/memory.rs b/lib/vm/src/memory.rs
+index f071365d1..9d834b41f 100644
+--- a/lib/vm/src/memory.rs
++++ b/lib/vm/src/memory.rs
+@@ -14,17 +14,18 @@ use wasmer_types::{Bytes, MemoryError, MemoryStyle, MemoryType, Pages};
+ 
+ // The memory mapped area
+ #[derive(Debug)]
+-struct WasmMmap {
++pub struct WasmMmap {
+     // Our OS allocation of mmap'd memory.
+     alloc: Mmap,
+     // The current logical size in wasm pages of this linear memory.
+     size: Pages,
+     /// The owned memory definition used by the generated code
+-    vm_memory_definition: MaybeInstanceOwned<VMMemoryDefinition>,
++    /// add z
++    pub vm_memory_definition: MaybeInstanceOwned<VMMemoryDefinition>,
+ }
+ 
+ impl WasmMmap {
+-    fn get_vm_memory_definition(&self) -> NonNull<VMMemoryDefinition> {
++    pub fn get_vm_memory_definition(&self) -> NonNull<VMMemoryDefinition> {
+         self.vm_memory_definition.as_ptr()
+     }
+ 
+@@ -146,7 +147,8 @@ impl VMMemoryConfig {
+ #[derive(Debug)]
+ pub struct VMOwnedMemory {
+     // The underlying allocation.
+-    mmap: WasmMmap,
++    /// add z
++    pub mmap: WasmMmap,
+     // Configuration of this memory
+     config: VMMemoryConfig,
+ }
+diff --git a/lib/vm/src/store.rs b/lib/vm/src/store.rs
+index 57630f15c..bdaf9a733 100644
+--- a/lib/vm/src/store.rs
++++ b/lib/vm/src/store.rs
+@@ -17,7 +17,7 @@ use crate::{InstanceHandle, VMFunction, VMFunctionEnvironment, VMGlobal, VMMemor
+ /// context. This is used to check that a handle is always used with the
+ /// correct context.
+ #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+-pub struct StoreId(NonZeroU64);
++pub struct StoreId(pub NonZeroU64);
+ 
+ impl Default for StoreId {
+     // Allocates a unique ID for a new context.
+@@ -63,9 +63,12 @@ impl_context_object! {
+ #[derive(Default)]
+ pub struct StoreObjects {
+     id: StoreId,
+-    memories: Vec<VMMemory>,
+-    tables: Vec<VMTable>,
+-    globals: Vec<VMGlobal>,
++    /// add z
++    pub memories: Vec<VMMemory>,
++    /// add z
++    pub tables: Vec<VMTable>,
++    /// add z
++    pub globals: Vec<VMGlobal>,
+     functions: Vec<VMFunction>,
+     instances: Vec<InstanceHandle>,
+     extern_objs: Vec<VMExternObj>,

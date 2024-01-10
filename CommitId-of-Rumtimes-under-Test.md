@@ -1,0 +1,9 @@
+Here are the commit id of the runtimes under test.
+
+WAMR in classic interpreter mode: 6820af621265413b677e450cf126bb66c9f77077
+WAMR in fast interpreter mode: 6820af621265413b677e450cf126bb66c9f77077
+WasmEdge: 980c52416bc53fafebcdf026cfc851a43dcb887c
+Wasmer: 6ca9a39c501ed6b0b8d7c793f9fba9a0d636b147
+WAVM: 3f9a150cac7faf28eab357a2c5b83d2ec740c7d9
+Wasm3: fa18e9ece4dd45371deac69ded32838470a55c1b
+wasmi: fc58331904c75afaac08e89238590a9bf6cd84d3

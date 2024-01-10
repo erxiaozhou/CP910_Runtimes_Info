@@ -1,0 +1,202 @@
+diff --git a/Lib/Runtime/Invoke.cpp b/Lib/Runtime/Invoke.cpp
+index 58205e1a..f34a6c8c 100644
+--- a/Lib/Runtime/Invoke.cpp
++++ b/Lib/Runtime/Invoke.cpp
+@@ -89,10 +89,111 @@ void Runtime::invokeFunction(Context* context,
+ 	unwindSignalsAsExceptions([&invokeContext] {
+ 		ContextRuntimeData* contextRuntimeData = getContextRuntimeData(invokeContext.context);
+ 
++		// add z
++		const char * has_inst_path = "/home/std_runtime_test/dump_WAVM_can_print/dump_instantiation";
++		uint32_t has_visited_here = 0xFFFFFFFF;
++		FILE *fp_has_inst = fopen(has_inst_path, "wb");
++		fwrite(&has_visited_here, 4, 1, fp_has_inst);
++		fclose(fp_has_inst);
++		// 
+ 		// Call the invoke thunk.
+ 		(*invokeContext.invokeThunk)(invokeContext.function,
+ 									 contextRuntimeData,
+ 									 invokeContext.arguments,
+ 									 invokeContext.outResults);
+ 	});
++	// dump
++	const char * store_path1 = "/home/std_runtime_test/dump_WAVM_can_print/dump_store";
++	FILE *fp = fopen(store_path1, "wb");
++	IndexMap<Uptr, WAVM::Runtime::Global*> * globals_ptr =&context->compartment->globals;
++	// global
++	size_t global_num = (*globals_ptr).size();
++	fwrite(&global_num, 8, 1, fp);
++	// int visited_mut_idx = 0;
++	IR::UntaggedValue * global_val_ptr;
++	Global * global_ptr;
++
++	// context->runtimeData->mutableGlobals;
++	char ty_char;
++	Uptr i;
++	for (i=0;i<global_num;i++) {
++		global_ptr = (*globals_ptr)[i];
++		if (global_ptr->type.isMutable)
++			global_val_ptr = &context->runtimeData->mutableGlobals[global_ptr->mutableGlobalIndex];
++		else
++			global_val_ptr = &(*globals_ptr)[i]->initialValue;
++		switch (global_ptr->type.valueType)
++		{
++			case ValueType::i32:
++				ty_char = 0x7F;
++				fwrite(&ty_char, 1, 1, fp);
++				fwrite(&(global_val_ptr->i32), 4, 1, fp);
++				break;
++			case ValueType::i64:
++				ty_char = 0x7E;
++				fwrite(&ty_char, 1, 1, fp);
++				fwrite(&(global_val_ptr->i64), 8, 1, fp);
++				break;
++			case ValueType::f32:
++				ty_char = 0x7D;
++				fwrite(&ty_char, 1, 1, fp);
++				fwrite(&(global_val_ptr->f32), 4, 1, fp);
++				break;
++			case ValueType::f64:
++				ty_char = 0x7C;
++				fwrite(&ty_char, 1, 1, fp);
++				fwrite(&(global_val_ptr->f64), 8, 1, fp);
++				break;
++			case ValueType::v128:
++				ty_char = 0x7B;
++				fwrite(&ty_char, 1, 1, fp);
++				fwrite(&(global_val_ptr->v128), 16, 1, fp);
++				break;
++			case ValueType::none:
++			case ValueType::any:
++			case ValueType::funcref:
++			case ValueType::externref:
++			default: WAVM_UNREACHABLE();
++		}
++	}
++	// table
++	size_t table_num = context->compartment->tables.size();
++	fwrite(&table_num, 8, 1, fp);
++	unsigned long table_len;
++	for(i=0;i<table_num; i++) {
++		table_len = context->compartment->tables[i]->numElements.load(std::memory_order_seq_cst);
++		
++		fwrite(&table_len, 8, 1, fp);
++		// printf("%lu\n", table_len);
++		// printf("%zu\n", sizeof(context->compartment->tables[i]->elements[0]));
++		// printf("%lu\n", context->compartment->tables[i]->elements[0].biasedValue.load());
++		// printf("%lu\n", context->compartment->tables[i]->elements[0].biasedValue);
++		// printf("%lu\n", context->compartment->tables[i]->elements[1].biasedValue.load());
++		// printf("%lu\n", context->compartment->tables[i]->elements[2].biasedValue.load());
++
++	}
++
++	// memory
++	
++	IndexMap<Uptr, WAVM::Runtime::Memory*> * memories_ptr =&context->compartment->memories;
++	size_t memory_num = (*memories_ptr).size();
++	fwrite(&memory_num, 8, 1, fp);
++	size_t memory_length;
++	
++	size_t page_number;
++	// size_t to_remove;
++	// WAVM::Runtime::ResourceQuota * ptr;
++
++	for(i=0;i<memory_num;i++){
++		
++		page_number =  (*memories_ptr)[i]->numPages.load(std::memory_order_seq_cst);
++		memory_length = page_number * 64 * 1024;
++		fwrite(&(page_number), 8, 1, fp);
++		fwrite(&(memory_length), 8, 1, fp);
++		fwrite((*memories_ptr)[i]->baseAddress, 1, memory_length, fp);
++
++	}
++
++	fclose(fp);
++
+ }
+diff --git a/Lib/Runtime/RuntimePrivate.h b/Lib/Runtime/RuntimePrivate.h
+index 92314cb4..0405310b 100644
+--- a/Lib/Runtime/RuntimePrivate.h
++++ b/Lib/Runtime/RuntimePrivate.h
+@@ -174,7 +174,7 @@ namespace WAVM { namespace Runtime {
+ 
+ 		const HashMap<std::string, Object*> exportMap;
+ 		const std::vector<Object*> exports;
+-
++	// public:
+ 		const std::vector<Function*> functions;
+ 		const std::vector<Table*> tables;
+ 		const std::vector<Memory*> memories;
+diff --git a/Programs/wavm/wavm-run.cpp b/Programs/wavm/wavm-run.cpp
+index b713fabf..7ec3b975 100644
+--- a/Programs/wavm/wavm-run.cpp
++++ b/Programs/wavm/wavm-run.cpp
+@@ -725,6 +725,59 @@ struct State
+ 		invokeFunction(
+ 			context, function, invokeSig, untaggedInvokeArgs.data(), untaggedInvokeResults.data());
+ 
++		// add z
++		const char * vstack_path = "/home/std_runtime_test/dump_WAVM_can_print/dump_vstack";
++    	FILE *fp2 = fopen(vstack_path, "wb");
++		size_t result_count = untaggedInvokeResults.size();
++		fwrite(&result_count, sizeof(result_count), 1, fp2);
++		//
++		char ty_char;
++		for(Uptr resultIndex = 0; resultIndex < untaggedInvokeResults.size(); ++resultIndex){
++			const ValueType resultType = invokeSig.results()[resultIndex];
++			const UntaggedValue& untaggedResult = untaggedInvokeResults[resultIndex];
++			switch (resultType)
++			{
++			case ValueType::i32:
++				ty_char = 0x7F;
++				fwrite(&ty_char, 1, 1, fp2);
++				fwrite(&untaggedResult.i32, 4, 1, fp2);
++				break;
++			case ValueType::i64:
++				ty_char = 0x7E;
++				fwrite(&ty_char, 1, 1, fp2);
++				fwrite(&untaggedResult.i64, 8, 1, fp2);
++				break;
++			case ValueType::f32:
++				ty_char = 0x7D;
++				fwrite(&ty_char, 1, 1, fp2);
++				fwrite(&untaggedResult.f32, 4, 1, fp2);
++				break;
++			case ValueType::f64:
++				ty_char = 0x7C;
++				fwrite(&ty_char, 1, 1, fp2);
++				fwrite(&untaggedResult.f64, 8, 1, fp2);
++				break;
++			case ValueType::v128:
++				ty_char = 0x7B;
++				fwrite(&ty_char, 1, 1, fp2);
++				fwrite(&untaggedResult.v128, 16, 1, fp2);
++				break;
++			case ValueType::funcref:
++				ty_char = 0x70;
++				fwrite(&ty_char, 1, 1, fp2);
++				break;
++			case ValueType::externref:
++				ty_char = 0x6F;
++				fwrite(&ty_char, 1, 1, fp2);
++				break;
++			case ValueType::none:
++			case ValueType::any:
++			default: WAVM_UNREACHABLE();
++			}
++		}
++		fclose(fp2);
++		//
++		
+ 		if(untaggedInvokeResults.size() == 1 && invokeSig.results()[0] == ValueType::i32)
+ 		{ return untaggedInvokeResults[0].i32; }
+ 		else
+@@ -835,6 +888,8 @@ struct State
+ 
+ 		// Log the peak memory usage.
+ 		Uptr peakMemoryUsage = Platform::getPeakMemoryUsageBytes();
++		// Log::printf(
++		// 	Log::output, "Peak memory usage: %" WAVM_PRIuPTR "KiB\n", peakMemoryUsage / 1024);
+ 		Log::printf(
+ 			Log::metrics, "Peak memory usage: %" WAVM_PRIuPTR "KiB\n", peakMemoryUsage / 1024);
+ 

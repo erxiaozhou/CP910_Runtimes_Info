@@ -1,0 +1,203 @@
+diff --git a/crates/cli/src/main.rs b/crates/cli/src/main.rs
+index 12e7fa52..cb33e8e3 100644
+--- a/crates/cli/src/main.rs
++++ b/crates/cli/src/main.rs
+@@ -41,10 +41,15 @@ fn main() -> Result<()> {
+     let mut results = prepare_results_buffer(&func_type);
+ 
+     print_execution_start(&wasm_file, &func_name, &func_args);
+-
++    //
++    let has_inst_path = "/home/std_runtime_test/dump_wasmi/dump_instantiation";
++    let mut file = std::fs::File::create(has_inst_path).expect("create failed");
++    let has_visited_num: u32 = 0xFFFFFFFF;
++    std::io::Write::write_all(&mut file, &has_visited_num.to_le_bytes()).expect("write failed");
++    //
+     func.call(&mut store, &func_args, &mut results)
+         .map_err(|error| anyhow!("failed during exeuction of {func_name}: {error}"))?;
+-
++    save_vstack(&results);
+     print_pretty_results(&results);
+ 
+     Ok(())
+@@ -262,3 +267,35 @@ fn print_pretty_results(results: &[Value]) {
+         }
+     }
+ }
++
++fn save_vstack(results: &[Value]) {
++    let result_num = results.len();
++    let file_path = "/home/std_runtime_test/dump_wasmi/dump_vstack";
++    let mut file = std::fs::File::create(file_path).expect("create failed");
++    std::io::Write::write_all(&mut file, &result_num.to_le_bytes()).expect("write failed");
++    for cur_result in results {
++        match cur_result {
++            Value::I32(value_content) =>{
++                    let cur_ty:u8 = 0x7F;
++                    std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                    std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++                },
++                Value::I64(value_content) =>{
++                        let cur_ty:u8 = 0x7E;
++                        std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                        std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++                    },
++                Value::F32(value_content) =>{
++                        let cur_ty:u8 = 0x7D;
++                        std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                        // let v = value_content.to_float().to_le_bytes();
++                        std::io::Write::write_all(&mut file, &value_content.to_float().to_le_bytes()).expect("write failed");
++                    },
++                Value::F64(value_content) =>{
++                        let cur_ty:u8 = 0x7C;
++                        std::io::Write::write_all(&mut file, &cur_ty.to_le_bytes()).expect("write failed");
++                        std::io::Write::write_all(&mut file, &value_content.to_float().to_le_bytes()).expect("write failed");
++                        }
++            }
++    }
++}
+\ No newline at end of file
+diff --git a/crates/wasmi/src/arena/guarded.rs b/crates/wasmi/src/arena/guarded.rs
+index 8d17df87..239154a5 100644
+--- a/crates/wasmi/src/arena/guarded.rs
++++ b/crates/wasmi/src/arena/guarded.rs
+@@ -3,8 +3,8 @@ use crate::arena::Index;
+ /// A guarded entity.
+ #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+ pub struct GuardedEntity<GuardIdx, EntityIdx> {
+-    guard_idx: GuardIdx,
+-    entity_idx: EntityIdx,
++    pub guard_idx: GuardIdx,
++    pub entity_idx: EntityIdx,
+ }
+ 
+ impl<GuardIdx, EntityIdx> GuardedEntity<GuardIdx, EntityIdx> {
+diff --git a/crates/wasmi/src/engine/mod.rs b/crates/wasmi/src/engine/mod.rs
+index d847fdde..b9cd3e22 100644
+--- a/crates/wasmi/src/engine/mod.rs
++++ b/crates/wasmi/src/engine/mod.rs
+@@ -43,6 +43,7 @@ use crate::{
+     FuncType,
+ };
+ use alloc::sync::Arc;
++use wasmi_core::Value;
+ use core::sync::atomic::{AtomicU32, Ordering};
+ pub use func_types::DedupFuncType;
+ use spin::mutex::Mutex;
+@@ -284,10 +285,98 @@ impl EngineInner {
+         self.initialize_args(params);
+         let signature = match func.as_internal(ctx.as_context()) {
+             FuncEntityInternal::Wasm(wasm_func) => {
++                // add z
++                let instance=wasm_func.instance();
++                let instance_entity = ctx.as_context().store.resolve_instance(instance);
++                let global_num = instance_entity.globals.len();
++                let memory_num = instance_entity.memories.len();
++                // 
+                 let signature = wasm_func.signature();
+                 let mut frame = self.stack.call_wasm_root(wasm_func, &self.code_map)?;
+                 let mut cache = InstanceCache::from(frame.instance());
+                 self.execute_wasm_func(ctx.as_context_mut(), &mut frame, &mut cache)?;
++                // 
++                let path = "/home/std_runtime_test/dump_wasmi/dump_store";
++                let mut file = std::fs::File::create(path).expect("create failed");
++                // global
++                std::io::Write::write_all(&mut file, &global_num.to_le_bytes()).expect("write failed");
++                // println!("global_num: {}",global_num);
++                for i in 0..global_num{
++                    let global=instance.get_global(&mut ctx.as_context(), i as u32).unwrap();
++                    let value = global.get(&mut ctx.as_context());
++                    
++                    let ty = global.value_type(&mut ctx.as_context());
++                    let ty_num = ty as u32;
++                    // let by = u32::from(UntypedValue::from(value));
++                    // let ty_ = ty as ty;
++                    // let mut global_value:&[u8];
++                    // println!("ty_num: {}",ty_num);
++                    std::io::Write::write_all(&mut file, &ty_num.to_le_bytes()).expect("write failed");
++                    match value {
++                        Value::I32(value_content) => {
++                            std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++                        },
++                        Value::I64(value_content) => {
++                            std::io::Write::write_all(&mut file, &value_content.to_le_bytes()).expect("write failed");
++                        },
++                        Value::F32(value_content) => {
++                            std::io::Write::write_all(&mut file, &value_content.to_float().to_le_bytes()).expect("write failed");
++                        },
++                        Value::F64(value_content) => {
++                            std::io::Write::write_all(&mut file, &value_content.to_float().to_le_bytes()).expect("write failed");
++                        },
++                    };
++                    // TODO
++                }
++                // Table
++                // only default_table.
++                let default_table = instance.get_table(&mut ctx.as_context(), crate::module::DEFAULT_TABLE_INDEX);
++                match default_table {
++                    Some(default_table) => {
++                        let table_len = default_table.len(&mut ctx.as_context());
++                        std::io::Write::write_all(&mut file, &table_len.to_le_bytes()).expect("write failed");
++                        // println!("table_len: {}", table_len);
++                        for i in 0..table_len{
++                            let table_elem = default_table
++                                .get(&mut ctx.as_context(), i)
++                                .map_err(|_| TrapCode::TableAccessOutOfBounds)?
++                                .ok_or(TrapCode::ElemUninitialized)?;
++                            let sig = table_elem.signature(&mut ctx.as_context());
++                            let _sig_entity = sig.into_inner();
++                            let func_idx = table_elem.into_inner();
++                            let guard_idx =func_idx.guard_idx.into_usize();
++                            let entity_idx = func_idx.entity_idx.into_usize();
++                            std::io::Write::write_all(&mut file, &guard_idx.to_le_bytes()).expect("write failed");
++                            std::io::Write::write_all(&mut file, &entity_idx.to_le_bytes()).expect("write failed");
++                            // println!("{} {}", guard_idx,entity_idx);
++                        }
++                    },
++                    None=>{
++                        let table_len:usize = 0;
++                        std::io::Write::write_all(&mut file, &table_len.to_le_bytes()).expect("write failed");
++                    }
++                }
++
++                // memory
++                // * just default memory
++                // instance.memo
++                
++                std::io::Write::write_all(&mut file, &memory_num.to_le_bytes()).expect("write failed");
++                if memory_num > 0 {
++                    let memory = instance.get_memory(&mut ctx.as_context(), crate::module::DEFAULT_MEMORY_INDEX).unwrap_or_else(|| {
++                        panic!("func does not have default linear memory: {:?}", "add z")});
++                    let data = memory.data(&mut ctx);
++                    // let data_size_bytes_len = data.len().to_le_bytes().len();
++                    // println!("data_size_bytes_len: {}",data_size_bytes_len);
++                    // write data length
++                    std::io::Write::write_all(&mut file, &data.len().to_le_bytes()).expect("write failed");
++                    // write default memory data
++                    std::io::Write::write_all(&mut file, data).expect("write failed");
++    
++                    // write page number
++                    let page_num = memory.current_pages(&mut ctx.as_context()).0 as u32;
++                    std::io::Write::write_all(&mut file, &page_num.to_le_bytes()).expect("write failed");
++                }
+                 signature
+             }
+             FuncEntityInternal::Host(host_func) => {
+diff --git a/crates/wasmi/src/instance.rs b/crates/wasmi/src/instance.rs
+index 1fb25e05..73666f22 100644
+--- a/crates/wasmi/src/instance.rs
++++ b/crates/wasmi/src/instance.rs
+@@ -39,10 +39,10 @@ impl Index for InstanceIdx {
+ pub struct InstanceEntity {
+     initialized: bool,
+     func_types: Vec<DedupFuncType>,
+-    tables: Vec<Table>,
++    pub tables: Vec<Table>,
+     funcs: Vec<Func>,
+-    memories: Vec<Memory>,
+-    globals: Vec<Global>,
++    pub memories: Vec<Memory>,
++    pub globals: Vec<Global>,
+     exports: BTreeMap<String, Extern>,
+ }
+ 
